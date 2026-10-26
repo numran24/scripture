@@ -3,6 +3,12 @@
 export const STEPS = [1, 3, 7, 14, 30, 60];
 export const MEMORIZED_STEP = 3; // the 14-day step
 export const STAGES = ['Read aloud', 'First letters', 'Fill blanks (30%)', 'Fill blanks (60%)', 'Reference only'];
+/** Levels you can pick in the drill. 0-4 are the stages; 5 and 6 are typed. */
+export const DRILL_LEVELS = [
+  'Read aloud', 'First letters', 'Fill blanks (30%)', 'Fill blanks (60%)', 'Reference only',
+  'Write most (first letters shown)', 'Write all from memory',
+];
+export const isTypedLevel = (n) => n >= 5;
 export const RINGS = ['Ephesians', 'Ring 1', 'Ring 2', 'Ring 3', 'Ring 4', 'Ring 5'];
 export const REVIEW_CAP = 20;
 
@@ -407,4 +413,76 @@ export function bestStreak(reads) {
   let best = 0;
   for (const d of Object.keys(reads)) if (reads[d] >= 1) best = Math.max(best, computeStreak(reads, d).streak);
   return best;
+}
+
+/* ---------- typed recall ---------- */
+const wordsOf = (t) => String(t || '').toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}'\s-]/gu, ' ').split(/\s+/).map((w) => w.replace(/^['-]+|['-]+$/g, '')).filter(Boolean);
+/**
+ * Compare what was typed with the verse, word by word (order matters, punctuation and
+ * capitals do not). Returns the verse words marked hit/miss, the extra words typed, and a score.
+ */
+export function compareWords(target, typed) {
+  const orig = String(target || '').split(/\s+/).filter(Boolean);
+  const t = orig.map((w) => wordsOf(w).join(' '));
+  const y = wordsOf(typed);
+  const n = t.length, m = y.length;
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = t[i] && t[i] === y[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const words = [], extras = [];
+  let i = 0, j = 0, hits = 0;
+  while (i < n) {
+    if (t[i] === '') { words.push({ w: orig[i], hit: true, skip: true }); i++; continue; }
+    if (j < m && t[i] === y[j]) { words.push({ w: orig[i], hit: true }); hits++; i++; j++; }
+    else if (j < m && dp[i][j + 1] >= dp[i + 1][j]) { extras.push(y[j]); j++; }
+    else { words.push({ w: orig[i], hit: false }); i++; }
+  }
+  while (j < m) { extras.push(y[j]); j++; }
+  const total = t.filter(Boolean).length;
+  return { words, extras, hits, total, extra: Math.max(0, m - hits), pct: total ? Math.round((100 * hits) / total) : 0 };
+}
+export function suggestGrade(pct) {
+  return pct >= 95 ? 'Easy or Good' : pct >= 80 ? 'Good' : pct >= 50 ? 'Hard' : 'Missed';
+}
+
+export function editDistance(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...new Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+    dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return dp[a.length][b.length];
+}
+const clean = (w) => wordsOf(w).join('');
+/** Closest unused extra typed word to a missed word (a slip of a letter or two), or -1. */
+export function nearestExtra(word, extras, used = new Set()) {
+  const w = clean(word), limit = w.length >= 7 ? 2 : 1;
+  let best = -1, bd = Infinity;
+  extras.forEach((x, k) => {
+    if (used.has(k)) return;
+    const d = editDistance(w, clean(x));
+    if (d <= limit && d < bd) { best = k; bd = d; }
+  });
+  return best;
+}
+/**
+ * forgiven: Map of missed-word index -> index of the extra typed word it was paired with (or -1).
+ * Forgiven words count as right, and the paired extra no longer counts as an extra.
+ */
+export function scoreWith(result, forgiven = new Map()) {
+  const paired = [...forgiven.values()].filter((k) => k >= 0).length;
+  const hits = result.hits + forgiven.size;
+  return {
+    hits, total: result.total, extra: Math.max(0, result.extra - paired),
+    pct: result.total ? Math.round((100 * hits) / result.total) : 0,
+  };
+}
+/** Auto-forgive every missed word that has a close typed counterpart. */
+export function forgiveTypos(result, forgiven = new Map()) {
+  const out = new Map(forgiven);
+  const used = new Set([...out.values()].filter((k) => k >= 0));
+  result.words.forEach((w, i) => {
+    if (w.hit || out.has(i)) return;
+    const k = nearestExtra(w.w, result.extras, used);
+    if (k >= 0) { used.add(k); out.set(i, k); }
+  });
+  return out;
 }

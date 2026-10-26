@@ -365,35 +365,73 @@ function viewDrill([mode, arg]) {
   const title = { memorize: 'Memorize', review: 'Review', rehearse: 'Rehearse' }[mode] || 'Drill';
   if (!dr.cards.length) return h('div', { class: 'card' }, back(exit, 'Close'), h('h2', null, title), empty('Nothing to drill right now. Verses with no text cannot be drilled.'));
   if (dr.i >= dr.cards.length) return drillDone(exit, title);
-  const c = dr.cards[dr.i], p = c.p, stage = c.rehearse ? 4 : p.mem.stage;
+  const c = dr.cards[dr.i], p = c.p;
+  const pick = S.settings().drillMode || 'auto';
+  const manual = !c.rehearse && pick !== 'auto';
+  const level = c.rehearse ? 4 : manual ? +pick : p.mem.stage;
+  const typed = !c.rehearse && L.isTypedLevel(level);
   const el = h('div', { class: 'card drill' });
   el.append(h('div', { class: 'vhead' }, back(exit, 'Close'), h('span', { class: 'grow' }), h('span', { class: 'muted' }, `${Math.min(dr.i + 1, dr.cards.length)} / ${dr.cards.length}`)));
-  if (!c.rehearse) el.append(h('div', { class: 'small muted' }, `Stage ${stage + 1}/5: ${L.STAGES[stage]}`), bar(stage + 1, 5));
+  if (!c.rehearse) {
+    el.append(h('label', { class: 'lbl' }, 'How to drill',
+      h('select', { class: 'field', 'aria-label': 'Drill level', onchange: async (e) => { await S.saveSettings({ drillMode: e.target.value }); dr.shown = false; dr.typed = ''; dr.forgive = new Map(); render(); } },
+        h('option', { value: 'auto', selected: pick === 'auto' }, 'Auto (steps up as I get it right)'),
+        L.DRILL_LEVELS.map((n, i) => h('option', { value: String(i), selected: pick === String(i) }, `${i + 1}. ${n}`)))));
+    el.append(h('div', { class: 'small muted' }, manual ? `Level: ${L.DRILL_LEVELS[level]}` : `Auto: stage ${level + 1}/5, ${L.STAGES[level]}`), bar(Math.min(level, 4) + 1, 5));
+  }
   // front
   const front = h('div', { class: 'front' });
-  if (c.front === 'thought' && c.lie) front.append(h('div', { class: 'label' }, 'The thought'), h('div', { class: 'lie' }, c.lie.thought), h('div', { class: 'label' }, 'Say the truth and the verse'));
+  if (c.front === 'thought' && c.lie) front.append(h('div', { class: 'label' }, 'The thought'), h('div', { class: 'lie' }, c.lie.thought), h('div', { class: 'label' }, typed ? 'Write the verse' : 'Say the truth and the verse'));
   else if (c.front === 'both') front.append(h('div', { class: 'lie' }, c.lie.thought), h('div', { class: 'ref big2' }, p.label), h('div', { class: 'label' }, 'Say the truth, then recall the verse'));
   else front.append(h('div', { class: 'ref big2' }, p.label));
-  if (!c.rehearse) {
-    const hint = L.hintFor(stage, p.text, p.key + ':' + p.mem.reps);
-    if (hint && !dr.shown) front.append(h('p', { class: 'vtext large hint' }, hint));
-    if (stage === 0 && !dr.shown) front.append(h('p', { class: 'say' }, 'Read it aloud.'));
-    if (stage === 4 && !dr.shown) front.append(h('p', { class: 'muted' }, 'Recall everything, then check.'));
+  let ta = null;
+  if (!c.rehearse && !dr.shown) {
+    const seed = p.key + ':' + p.mem.reps;
+    const hint = level === 5 ? L.firstLetters(p.text) : L.hintFor(Math.min(level, 4), p.text, seed);
+    if (hint) front.append(h('p', { class: 'vtext large hint' }, hint));
+    if (level === 0) front.append(h('p', { class: 'say' }, 'Read it aloud.'));
+    if (level === 4) front.append(h('p', { class: 'muted' }, 'Recall everything, then check.'));
+    if (typed) {
+      ta = h('textarea', { class: 'field typed', rows: 7, placeholder: level === 5 ? 'Type the whole verse. The letters above are your help.' : 'Type the whole verse from memory.', autocapitalize: 'off', autocomplete: 'off', autocorrect: 'off', spellcheck: 'false', 'aria-label': 'Your answer',
+        oninput: (e) => { dr.typed = e.target.value; } }, dr.typed || '');
+      front.append(ta);
+    }
   }
   el.append(front);
+  if (ta) requestAnimationFrame(() => ta.focus());
   if (!dr.shown) {
-    el.append(btn('Show answer', () => { dr.shown = true; render(); }, 'primary big'));
+    el.append(btn(typed ? 'Check my answer' : 'Show answer', () => { dr.shown = true; render(); }, 'primary big'));
   } else {
-    el.append(h('div', { class: 'back-side' },
-      c.lie && c.front !== 'ref' && h('div', { class: 'truth' }, c.lie.truth),
-      h('div', { class: 'ref' }, p.label), h('p', { class: 'vtext large' }, p.text), h('div', { class: 'handle' }, p.handle)));
+    const back_ = h('div', { class: 'back-side' }, c.lie && c.front !== 'ref' && h('div', { class: 'truth' }, c.lie.truth), h('div', { class: 'ref' }, p.label));
+    if (typed) {
+      const r = L.compareWords(p.text, dr.typed || '');
+      const fg = dr.forgive || (dr.forgive = new Map());
+      const sc = L.scoreWith(r, fg);
+      const typos = L.forgiveTypos(r, fg).size - fg.size;
+      const toggle = (i, w) => () => {
+        if (fg.has(i)) fg.delete(i);
+        else fg.set(i, L.nearestExtra(w, r.extras, new Set([...fg.values()].filter((k) => k >= 0))));
+        render();
+      };
+      back_.append(
+        h('p', { class: 'vtext large cmp' }, r.words.map((w, i) => [i ? ' ' : '', w.hit ? w.w
+          : h('button', { type: 'button', class: 'miss' + (fg.has(i) ? ' forgiven' : ''), 'aria-pressed': fg.has(i) ? 'true' : 'false',
+            'aria-label': (fg.has(i) ? 'Counted as right: ' : 'Missed, tap to count as right: ') + w.w, onclick: toggle(i, w.w) }, (fg.has(i) ? '✓ ' : '') + w.w)])),
+        h('div', { class: 'score' }, `${sc.hits} of ${sc.total} words right (${sc.pct}%)` + (fg.size ? `, ${fg.size} forgiven` : '') + (sc.extra ? `, ${sc.extra} extra` : '') + '. Suggested: ' + L.suggestGrade(sc.pct)),
+        h('div', { class: 'actions' },
+          typos > 0 && btn(`Forgive likely typos (${typos})`, () => { dr.forgive = L.forgiveTypos(r, fg); render(); }, 'ghost small'),
+          fg.size > 0 && btn('Undo forgiving', () => { dr.forgive = new Map(); render(); }, 'ghost small')),
+        h('div', { class: 'small muted' }, 'Underlined words were missed or out of order. Tap one to count it as right (a keyboard slip, say). The grade you press below is what gets recorded.'));
+    } else back_.append(h('p', { class: 'vtext large' }, p.text));
+    back_.append(h('div', { class: 'handle' }, p.handle));
+    el.append(back_);
     if (c.rehearse) {
       el.append(h('div', { class: 'grades two' },
         btn('Again', () => { dr.cards.push({ ...c }); next(); }, 'g-missed'), btn('Got it', () => { dr.tally.good++; next(); }, 'g-good')));
     } else {
       const g = (label, key) => btn(label, async () => {
         dr.tally[key]++;
-        await S.grade(p.key, key);
+        await S.grade(p.key, key, manual ? level : null);
         if (key === 'missed' && !c.again) dr.cards.push({ ...c, again: true, p: S.passageView(p.key, db.get('mem', p.key)) });
         next();
       }, 'g-' + key);
@@ -402,7 +440,7 @@ function viewDrill([mode, arg]) {
   }
   return el;
 }
-function next() { dr.i++; dr.shown = false; if (dr.i >= dr.cards.length) dr.over = true; render(); }
+function next() { dr.i++; dr.shown = false; dr.typed = ''; dr.forgive = new Map(); if (dr.i >= dr.cards.length) dr.over = true; render(); }
 function drillDone(exit, title) {
   const t = dr.tally, n = t.missed + t.hard + t.good + t.easy;
   if (!dr.recorded) {
