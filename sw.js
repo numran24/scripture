@@ -1,5 +1,5 @@
 // Offline shell. Bump VERSION when you change any app file so phones pick up the update.
-const VERSION = 'v1';
+const VERSION = 'v4';
 const CACHE = 'scripture-' + VERSION;
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
