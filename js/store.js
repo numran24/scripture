@@ -3,7 +3,7 @@ import * as db from './db.js';
 import * as L from './logic.js';
 
 /* ---------- settings (three small records so devices rarely overwrite each other) ---------- */
-const DEFAULTS = { theme: 'system', split: 6, reminderOn: false, reminderTime: '07:00' };
+const DEFAULTS = { theme: 'system', split: 6, reminderOn: false, reminderTime: '07:00', drillMode: 'auto' };
 export const settings = () => ({ ...DEFAULTS, ...(db.get('settings', 'main') || {}) });
 export const saveSettings = (p) => db.put('settings', 'main', { ...settings(), ...p });
 export const pos = () => db.get('settings', 'plan') || { week: 1, day: 0 };
@@ -165,10 +165,21 @@ export async function removeFromQueue(id) {
   const m = db.get('mem', id);
   if (m) await db.put('mem', id, { ...m, archived: true });
 }
-export async function grade(key, g) {
+/**
+ * level = null/undefined: Auto, the stage follows the grade as usual.
+ * level = a number you picked: the schedule is updated as usual, but a Good or Easy at a
+ * harder level than the stage moves the stage up to that level (typed levels count as the top stage).
+ */
+export async function grade(key, g, level) {
   const m = db.get('mem', key);
   if (!m) return;
-  await db.put('mem', key, L.applyGrade(m, g, today()));
+  const n = L.applyGrade(m, g, today());
+  if (level != null) {
+    const top = Math.min(L.STAGES.length - 1, level);
+    if (g === 'good' || g === 'easy') n.stage = Math.max(m.stage, top);
+    else if (g === 'hard') n.stage = m.stage;
+  }
+  await db.put('mem', key, n);
 }
 export const memorizedKeys = () => memAll().filter((e) => e.mem.memorized).map((e) => e.key);
 
